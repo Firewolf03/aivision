@@ -7,6 +7,9 @@ import pandas as pd
 from PIL import Image
 from google import genai
 from google.genai import types
+from googlesheets import GoogleSheetService
+
+sheet_service = GoogleSheetService("Sheet1")
 
 # =========================
 # CONFIG
