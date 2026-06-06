@@ -1,199 +1,167 @@
+# ==========================================
+# AI RECEIPT SYSTEM - MISDEC VERSION
+# Streamlit App (Production Structure)
+# ==========================================
+
 import streamlit as st
-import json
-import hashlib
-import os
-import datetime
-import pandas as pd
 from PIL import Image
-from google import genai
-from google.genai import types
-from googlesheets import GoogleSheetService
+import datetime
+import tempfile
 
-sheet_service = GoogleSheetService("YOUR_SHEET_NAME")
+from google_sheets import GoogleSheetService
+from google_drive import upload_image
+from utils import generate_hash, items_to_text, detect_category
 
-# =========================
-# CONFIG
-# =========================
-QUEUE_FILE = "offline_queue.json"
-
-st.set_page_config(page_title="AI Receipt System", layout="centered")
-
-st.title("📸 AI Receipt + Invoice Scanner (PRO)")
 
 # =========================
-# OFFLINE QUEUE SYSTEM
+# PAGE CONFIG
 # =========================
-def load_queue():
-    if os.path.exists(QUEUE_FILE):
-        return json.load(open(QUEUE_FILE))
-    return []
+st.set_page_config(
+    page_title="AI Receipt Scanner",
+    page_icon="📸",
+    layout="centered"
+)
 
-def save_queue(queue):
-    with open(QUEUE_FILE, "w") as f:
-        json.dump(queue, f, indent=2)
+st.title("📸 AI Receipt / Invoice Scanner")
+st.caption("MISDEC AI Automation System")
 
-def add_to_queue(data):
-    queue = load_queue()
-    queue.append(data)
-    save_queue(queue)
+st.markdown("---")
 
-def sync_queue(sheet_func):
-    queue = load_queue()
-    if not queue:
-        return "No pending data"
-
-    success = 0
-    remaining = []
-
-    for item in queue:
-        try:
-            sheet_func(item)
-            success += 1
-        except:
-            remaining.append(item)
-
-    save_queue(remaining)
-    return f"Synced {success} items"
 
 # =========================
-# DUPLICATE DETECTION
+# INIT SERVICES
 # =========================
-def generate_hash(data):
-    key = f"{data['vendor_name']}_{data['total_amount']}_{data['date']}"
-    return hashlib.md5(key.encode()).hexdigest()
+sheet_service = GoogleSheetService()
 
-def is_duplicate(new_hash, existing_hashes):
-    return new_hash in existing_hashes
 
 # =========================
-# IMAGE HASH (optional strong duplicate detection)
+# CAMERA + UPLOAD
 # =========================
-def image_hash(image):
-    return hashlib.md5(image.tobytes()).hexdigest()
+uploaded_file = st.file_uploader(
+    "📁 Upload Receipt / Invoice",
+    type=["jpg", "jpeg", "png"]
+)
 
-# =========================
-# GEMINI CALL
-# =========================
-def extract_data(api_key, image, prompt):
+camera_file = st.camera_input("📸 Snap Receipt")
 
-    client = genai.Client(api_key=api_key)
+image_file = uploaded_file or camera_file
 
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=[prompt, image],
-        config=types.GenerateContentConfig(
-            temperature=0.1,
-            response_mime_type="application/json"
-        )
-    )
-
-    text = response.text.strip()
-    if text.startswith("```"):
-        text = text.replace("```json", "").replace("```", "").strip()
-
-    return json.loads(text)
-
-# =========================
-# PROMPT
-# =========================
-PROMPT = """
-Extract receipt/invoice/quotation into JSON:
-
-{
-  "document_type": "receipt | invoice | quotation",
-  "document_number": null,
-  "vendor_name": null,
-  "currency": "MYR",
-  "subtotal": null,
-  "tax_amount": null,
-  "total_amount": null,
-  "items": [],
-  "payment_method": null,
-  "location": null,
-  "confidence_score": 0.0,
-  "date": null
-}
-"""
-
-# =========================
-# UI INPUT
-# =========================
-api_key = st.text_input("Gemini API Key", type="password")
-
-uploaded = st.file_uploader("Upload OR Camera", type=["png","jpg","jpeg"])
-
-camera = st.camera_input("📸 Snap Receipt")
-
-image = uploaded or camera
 
 # =========================
 # MAIN PROCESS
 # =========================
-if st.button("🚀 Process"):
+if st.button("🚀 Process Document", use_container_width=True):
 
-    if not api_key:
-        st.error("Missing API key")
+    if not image_file:
+        st.error("Please upload or capture an image first.")
         st.stop()
 
-    if not image:
-        st.error("No image")
+    # =========================
+    # SHOW IMAGE
+    # =========================
+    image = Image.open(image_file)
+    st.image(image, caption="Input Document", use_container_width=True)
+
+
+    # =========================
+    # SAVE TEMP FILE (FOR DRIVE UPLOAD)
+    # =========================
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+        tmp.write(image_file.getbuffer())
+        temp_path = tmp.name
+
+
+    # =========================
+    # UPLOAD TO GOOGLE DRIVE
+    # =========================
+    image_url = upload_image(temp_path)
+
+
+    # =========================
+    # MOCK AI OUTPUT (REPLACE WITH GEMINI LATER)
+    # =========================
+    data = {
+        "document_type": "receipt",
+        "document_number": None,
+        "vendor_name": "Example Shop Sdn Bhd",
+        "currency": "MYR",
+        "subtotal": None,
+        "tax_amount": None,
+        "total_amount": 25.50,
+        "items": [
+            {"item": "Nasi Lemak", "qty": 2, "price": 5.00},
+            {"item": "Teh O", "qty": 1, "price": 2.50}
+        ],
+        "payment_method": "cash",
+        "location": "Melaka",
+        "confidence_score": 0.95,
+        "date": str(datetime.date.today())
+    }
+
+
+    # =========================
+    # LOGIC PROCESSING
+    # =========================
+    category = detect_category(data)
+
+    items_text = items_to_text(data.get("items"))
+
+    doc_hash = generate_hash(
+        data.get("vendor_name"),
+        data.get("total_amount"),
+        data.get("date")
+    )
+
+
+    # =========================
+    # BUILD ROW (MATCH YOUR SHEET)
+    # =========================
+    row = [
+        str(datetime.datetime.now()),        # Timestamp
+        data.get("document_type"),           # Document Type
+        data.get("document_number"),         # Document Number
+        data.get("vendor_name"),             # Vendor Name
+        data.get("currency"),                # Currency
+        data.get("subtotal"),                # Subtotal
+        data.get("tax_amount"),              # Tax Amount
+        data.get("total_amount"),            # Total Amount
+        items_text,                          # Items Text
+        category,                            # Category
+        data.get("payment_method"),         # Payment Method
+        data.get("location"),               # Location
+        data.get("confidence_score"),       # Confidence Score
+        image_url                            # Image URL
+    ]
+
+
+    # =========================
+    # SAVE TO GOOGLE SHEETS
+    # =========================
+    try:
+        sheet_service.append_row(row)
+        st.success("✅ Saved to Google Sheets successfully!")
+
+    except Exception as e:
+        st.error(f"❌ Failed to save: {str(e)}")
         st.stop()
 
-    img = Image.open(image)
 
-    st.image(img, caption="Input Image")
+    # =========================
+    # SHOW OUTPUT
+    # =========================
+    st.markdown("### 📊 Extracted Data")
+    st.json(data)
 
-    with st.spinner("Processing AI..."):
+    st.markdown("### 🧾 Final Row Sent to Sheet")
+    st.code(row)
 
-        data = extract_data(api_key, img, PROMPT)
 
-        # =========================
-        # AUTO CATEGORY
-        # =========================
-        text = str(data)
+    st.markdown("### 🔐 Document Hash (Duplicate Check Ready)")
+    st.code(doc_hash)
 
-        if "restaurant" in text.lower():
-            category = "F&B"
-        elif "invoice" in text.lower():
-            category = "Services"
-        else:
-            category = "Others"
-
-        # =========================
-        # DUPLICATE HASH
-        # =========================
-        doc_hash = generate_hash({
-            "vendor_name": data.get("vendor_name"),
-            "total_amount": data.get("total_amount"),
-            "date": data.get("date")
-        })
-
-        # =========================
-        # SHOW RESULT
-        # =========================
-        st.success("Extracted Data")
-        st.json(data)
-
-        st.info(f"Hash: {doc_hash}")
-
-        # =========================
-        # OFFLINE MODE (QUEUE)
-        # =========================
-        record = {
-            "timestamp": str(datetime.datetime.now()),
-            "data": data,
-            "category": category,
-            "hash": doc_hash
-        }
-
-        add_to_queue(record)
-
-        st.success("Saved to offline queue (safe mode)")
 
 # =========================
-# SYNC BUTTON
+# FOOTER
 # =========================
 st.markdown("---")
-
-if st.button("🔄 Sync Queue to Google Sheets"):
-    st.success("Sync triggered (connect your sheet function here)")
+st.caption("🚀 MISDEC AI Automation System • Streamlit + Gemini + Google Cloud")
