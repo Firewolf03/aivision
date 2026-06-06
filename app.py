@@ -1,167 +1,120 @@
-# ==========================================
-# AI RECEIPT SYSTEM - MISDEC VERSION
-# Streamlit App (Production Structure)
-# ==========================================
-
 import streamlit as st
 from PIL import Image
 import datetime
-import tempfile
+import requests
 
-from google_sheets import GoogleSheetService
-from google_drive import upload_image
-from utils import generate_hash, items_to_text, detect_category
+from gemini import extract_with_gemini   # or paste function directly
+
+# =========================
+# CONFIG
+# =========================
+APPS_SCRIPT_URL = "YOUR_WEB_APP_URL"
+
+st.title("📸 AI Receipt Scanner (Gemini + Streamlit)")
 
 
 # =========================
-# PAGE CONFIG
+# PROMPT
 # =========================
-st.set_page_config(
-    page_title="AI Receipt Scanner",
-    page_icon="📸",
-    layout="centered"
-)
+PROMPT = """
+Extract receipt/invoice/quotation into JSON:
 
-st.title("📸 AI Receipt / Invoice Scanner")
-st.caption("MISDEC AI Automation System")
-
-st.markdown("---")
-
-
-# =========================
-# INIT SERVICES
-# =========================
-sheet_service = GoogleSheetService()
-
-
-# =========================
-# CAMERA + UPLOAD
-# =========================
-uploaded_file = st.file_uploader(
-    "📁 Upload Receipt / Invoice",
-    type=["jpg", "jpeg", "png"]
-)
-
-camera_file = st.camera_input("📸 Snap Receipt")
-
-image_file = uploaded_file or camera_file
+{
+  "document_type": "receipt | invoice | quotation",
+  "document_number": null,
+  "vendor_name": null,
+  "currency": "MYR",
+  "subtotal": null,
+  "tax_amount": null,
+  "total_amount": null,
+  "items": [],
+  "payment_method": null,
+  "location": null,
+  "confidence_score": 0.0
+}
+"""
 
 
 # =========================
-# MAIN PROCESS
+# INPUT
 # =========================
-if st.button("🚀 Process Document", use_container_width=True):
+api_key = st.text_input("Gemini API Key", type="password")
 
-    if not image_file:
-        st.error("Please upload or capture an image first.")
+file = st.camera_input("📸 Snap Receipt") or st.file_uploader("Upload Image")
+
+# =========================
+# SEND FUNCTION
+# =========================
+def send_to_sheet(payload):
+    return requests.post(APPS_SCRIPT_URL, json=payload)
+
+
+# =========================
+# PROCESS
+# =========================
+if st.button("🚀 Extract & Save"):
+
+    if not api_key:
+        st.error("Missing API key")
         st.stop()
 
-    # =========================
-    # SHOW IMAGE
-    # =========================
-    image = Image.open(image_file)
-    st.image(image, caption="Input Document", use_container_width=True)
-
-
-    # =========================
-    # SAVE TEMP FILE (FOR DRIVE UPLOAD)
-    # =========================
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-        tmp.write(image_file.getbuffer())
-        temp_path = tmp.name
-
-
-    # =========================
-    # UPLOAD TO GOOGLE DRIVE
-    # =========================
-    image_url = upload_image(temp_path)
-
-
-    # =========================
-    # MOCK AI OUTPUT (REPLACE WITH GEMINI LATER)
-    # =========================
-    data = {
-        "document_type": "receipt",
-        "document_number": None,
-        "vendor_name": "Example Shop Sdn Bhd",
-        "currency": "MYR",
-        "subtotal": None,
-        "tax_amount": None,
-        "total_amount": 25.50,
-        "items": [
-            {"item": "Nasi Lemak", "qty": 2, "price": 5.00},
-            {"item": "Teh O", "qty": 1, "price": 2.50}
-        ],
-        "payment_method": "cash",
-        "location": "Melaka",
-        "confidence_score": 0.95,
-        "date": str(datetime.date.today())
-    }
-
-
-    # =========================
-    # LOGIC PROCESSING
-    # =========================
-    category = detect_category(data)
-
-    items_text = items_to_text(data.get("items"))
-
-    doc_hash = generate_hash(
-        data.get("vendor_name"),
-        data.get("total_amount"),
-        data.get("date")
-    )
-
-
-    # =========================
-    # BUILD ROW (MATCH YOUR SHEET)
-    # =========================
-    row = [
-        str(datetime.datetime.now()),        # Timestamp
-        data.get("document_type"),           # Document Type
-        data.get("document_number"),         # Document Number
-        data.get("vendor_name"),             # Vendor Name
-        data.get("currency"),                # Currency
-        data.get("subtotal"),                # Subtotal
-        data.get("tax_amount"),              # Tax Amount
-        data.get("total_amount"),            # Total Amount
-        items_text,                          # Items Text
-        category,                            # Category
-        data.get("payment_method"),         # Payment Method
-        data.get("location"),               # Location
-        data.get("confidence_score"),       # Confidence Score
-        image_url                            # Image URL
-    ]
-
-
-    # =========================
-    # SAVE TO GOOGLE SHEETS
-    # =========================
-    try:
-        sheet_service.append_row(row)
-        st.success("✅ Saved to Google Sheets successfully!")
-
-    except Exception as e:
-        st.error(f"❌ Failed to save: {str(e)}")
+    if not file:
+        st.error("No image")
         st.stop()
 
+    image = Image.open(file)
+    st.image(image)
 
     # =========================
-    # SHOW OUTPUT
+    # GEMINI AI
     # =========================
-    st.markdown("### 📊 Extracted Data")
+    data = extract_with_gemini(api_key, image, PROMPT)
+
+    st.success("AI Extraction Done")
     st.json(data)
 
-    st.markdown("### 🧾 Final Row Sent to Sheet")
-    st.code(row)
+    # =========================
+    # FORMAT ITEMS
+    # =========================
+    items_text = "; ".join(
+        [f"{i.get('item')} x{i.get('qty',1)}" for i in data.get("items", [])]
+    )
 
+    # =========================
+    # AUTO CATEGORY
+    # =========================
+    text = str(data).lower()
 
-    st.markdown("### 🔐 Document Hash (Duplicate Check Ready)")
-    st.code(doc_hash)
+    if "restaurant" in text or "food" in text:
+        category = "F&B"
+    elif "invoice" in text:
+        category = "Services"
+    else:
+        category = "Others"
 
+    # =========================
+    # BUILD PAYLOAD
+    # =========================
+    payload = {
+        "document_type": data.get("document_type"),
+        "document_number": data.get("document_number"),
+        "vendor_name": data.get("vendor_name"),
+        "currency": data.get("currency"),
+        "subtotal": data.get("subtotal"),
+        "tax_amount": data.get("tax_amount"),
+        "total_amount": data.get("total_amount"),
+        "items_text": items_text,
+        "category": category,
+        "payment_method": data.get("payment_method"),
+        "location": data.get("location"),
+        "confidence_score": data.get("confidence_score"),
+        "image_url": "NOT_SET_YET"
+    }
 
-# =========================
-# FOOTER
-# =========================
-st.markdown("---")
-st.caption("🚀 MISDEC AI Automation System • Streamlit + Gemini + Google Cloud")
+    # =========================
+    # SEND TO SHEET
+    # =========================
+    res = send_to_sheet(payload)
+
+    st.success("Saved to Google Sheets")
+    st.write(res.text)
