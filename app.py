@@ -9,7 +9,7 @@ from google import genai
 from google.genai import types
 from googlesheets import GoogleSheetService
 
-sheet_service = GoogleSheetService("Sheet1")
+sheet_service = GoogleSheetService("YOUR_SHEET_NAME")
 
 # =========================
 # CONFIG
