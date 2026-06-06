@@ -1,186 +1,196 @@
-# ==========================================
-# CELL 2: BUILD THE AI VISION APP (app.py)
-# FIXED: Using gemini-2.5-flash (current model)
-# ==========================================
-
-#writefile app.py
 import streamlit as st
+import json
+import hashlib
+import os
+import datetime
+import pandas as pd
+from PIL import Image
 from google import genai
 from google.genai import types
-from PIL import Image
-import json
-import traceback
 
-# --- PAGE CONFIGURATION ---
-st.set_page_config(
-    page_title="Vision AI Data Extractor | MISDEC",
-    page_icon="🤖",
-    layout="centered"
-)
+# =========================
+# CONFIG
+# =========================
+QUEUE_FILE = "offline_queue.json"
 
-# --- HEADER ---
-st.title("📄 AI Vision: Document Data Extractor")
-st.caption("Built for MISDEC AI Training • Cik Kiah War Room")
-st.markdown("---")
-st.markdown(
-    "Upload a document image (receipt, invoice, form, handwriting) and watch "
-    "Gemini AI extract structured data in seconds. ✨"
-)
+st.set_page_config(page_title="AI Receipt System", layout="centered")
 
-# --- SIDEBAR: API KEY ---
-with st.sidebar:
-    st.header("⚙️ System Setup")
-    api_key = st.text_input(
-        "Enter your Gemini API Key:",
-        type="password",
-        help="Get it from Google AI Studio"
+st.title("📸 AI Receipt + Invoice Scanner (PRO)")
+
+# =========================
+# OFFLINE QUEUE SYSTEM
+# =========================
+def load_queue():
+    if os.path.exists(QUEUE_FILE):
+        return json.load(open(QUEUE_FILE))
+    return []
+
+def save_queue(queue):
+    with open(QUEUE_FILE, "w") as f:
+        json.dump(queue, f, indent=2)
+
+def add_to_queue(data):
+    queue = load_queue()
+    queue.append(data)
+    save_queue(queue)
+
+def sync_queue(sheet_func):
+    queue = load_queue()
+    if not queue:
+        return "No pending data"
+
+    success = 0
+    remaining = []
+
+    for item in queue:
+        try:
+            sheet_func(item)
+            success += 1
+        except:
+            remaining.append(item)
+
+    save_queue(remaining)
+    return f"Synced {success} items"
+
+# =========================
+# DUPLICATE DETECTION
+# =========================
+def generate_hash(data):
+    key = f"{data['vendor_name']}_{data['total_amount']}_{data['date']}"
+    return hashlib.md5(key.encode()).hexdigest()
+
+def is_duplicate(new_hash, existing_hashes):
+    return new_hash in existing_hashes
+
+# =========================
+# IMAGE HASH (optional strong duplicate detection)
+# =========================
+def image_hash(image):
+    return hashlib.md5(image.tobytes()).hexdigest()
+
+# =========================
+# GEMINI CALL
+# =========================
+def extract_data(api_key, image, prompt):
+
+    client = genai.Client(api_key=api_key)
+
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[prompt, image],
+        config=types.GenerateContentConfig(
+            temperature=0.1,
+            response_mime_type="application/json"
+        )
     )
-    st.markdown(
-        "🔑 [Get your API Key](https://aistudio.google.com/app/apikey)"
-    )
 
-    # --- API Key Tester Button ---
-    st.divider()
-    if st.button("🧪 Test API Key", use_container_width=True):
-        if not api_key:
-            st.error("Paste a key first")
-        else:
-            try:
-                client = genai.Client(api_key=api_key)
-                test_response = client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=["Say hello in one word"]
-                )
-                st.success(f"✅ Key works! Response: {test_response.text}")
-            except Exception as e:
-                st.error(f"❌ RAW ERROR:\n\n{type(e).__name__}: {str(e)}")
-                st.code(traceback.format_exc())
+    text = response.text.strip()
+    if text.startswith("```"):
+        text = text.replace("```json", "").replace("```", "").strip()
 
-    st.divider()
-    st.caption("💡 Your API key is never stored. Stays in your browser only.")
-    st.divider()
-    st.caption("🎓 MISDEC AI Vision Training")
-    st.caption("Trainer: Muhammad Nur Aqmal bin Khatiman")
+    return json.loads(text)
 
-# --- MAIN: FILE UPLOAD ---
-uploaded_file = st.file_uploader(
-    "📁 Upload your document image:",
-    type=["jpg", "png", "jpeg", "webp"],
-    help="Max 10MB. Works best with clear, well-lit images."
-)
+# =========================
+# PROMPT
+# =========================
+PROMPT = """
+Extract receipt/invoice/quotation into JSON:
 
-# --- DEFAULT PROMPT ---
-default_prompt = """You are a professional data extraction assistant.
-
-Extract these fields into JSON:
-- document_type: receipt | invoice | claim_form | other
-- date: YYYY-MM-DD, or null
-- currency: MYR | USD | GBP | AUD | null   (detect from the document)
-- vendor_name: string, or null
-- total_amount: number only; null if absent (null is NOT 0.00)
-- key_items: list of { "item": string|null, "amount": number|null }
-
-Rules:
-1. Every field present. If genuinely absent/unreadable, use null — never guess.
-2. null = "not in the document"; 0.00 = the document says zero.
-3. Preserve original language for text fields.
+{
+  "document_type": "receipt | invoice | quotation",
+  "document_number": null,
+  "vendor_name": null,
+  "currency": "MYR",
+  "subtotal": null,
+  "tax_amount": null,
+  "total_amount": null,
+  "items": [],
+  "payment_method": null,
+  "location": null,
+  "confidence_score": 0.0,
+  "date": null
+}
 """
 
-# --- PROMPT EDITOR ---
-st.markdown("### 🎯 AI Instruction (Prompt)")
-prompt = st.text_area(
-    "Edit the prompt to customize what you want to extract:",
-    value=default_prompt,
-    height=250,
-    label_visibility="collapsed"
-)
+# =========================
+# UI INPUT
+# =========================
+api_key = st.text_input("Gemini API Key", type="password")
 
-# --- ACTION BUTTON ---
-if st.button("🚀 Extract Data with AI", type="primary", use_container_width=True):
+uploaded = st.file_uploader("Upload OR Camera", type=["png","jpg","jpeg"])
+
+camera = st.camera_input("📸 Snap Receipt")
+
+image = uploaded or camera
+
+# =========================
+# MAIN PROCESS
+# =========================
+if st.button("🚀 Process"):
 
     if not api_key:
-        st.error("❌ Please enter your Gemini API Key in the sidebar.")
+        st.error("Missing API key")
         st.stop()
 
-    if not uploaded_file:
-        st.error("❌ Please upload a document image first.")
+    if not image:
+        st.error("No image")
         st.stop()
 
-    if uploaded_file.size > 10 * 1024 * 1024:
-        st.error("❌ File too large. Please upload an image under 10MB.")
-        st.stop()
+    img = Image.open(image)
 
-    try:
-        image = Image.open(uploaded_file)
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("#### 📷 Your Document")
-            st.image(image, use_container_width=True)
+    st.image(img, caption="Input Image")
 
-        client = genai.Client(api_key=api_key)
+    with st.spinner("Processing AI..."):
 
-        with col2:
-            st.markdown("#### ✨ AI Extraction Result")
-            with st.spinner("🧠 AI is analyzing your document..."):
-                response = client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=[prompt, image],
-                    config=types.GenerateContentConfig(
-                        temperature=0.1,
-                        response_mime_type="application/json",
-                        thinking_config=types.ThinkingConfig(thinking_budget=0),
-                    )
-                )
+        data = extract_data(api_key, img, PROMPT)
 
-                raw_text = response.text.strip()
-                if raw_text.startswith("```json"):
-                    raw_text = raw_text[7:]
-                if raw_text.startswith("```"):
-                    raw_text = raw_text[3:]
-                if raw_text.endswith("```"):
-                    raw_text = raw_text[:-3]
-                raw_text = raw_text.strip()
+        # =========================
+        # AUTO CATEGORY
+        # =========================
+        text = str(data)
 
-                try:
-                    parsed_json = json.loads(raw_text)
-                    st.success("✅ Data extracted successfully!")
-                    st.json(parsed_json)
-
-                    json_str = json.dumps(parsed_json, indent=2, ensure_ascii=False)
-                    st.download_button(
-                        label="⬇️ Download JSON",
-                        data=json_str,
-                        file_name="extracted_data.json",
-                        mime="application/json",
-                        use_container_width=True
-                    )
-                except json.JSONDecodeError:
-                    st.warning("⚠️ AI returned data but not strict JSON.")
-                    st.code(raw_text, language="json")
-
-    except Exception as e:
-        error_msg = str(e)
-        if "API key" in error_msg or "API_KEY" in error_msg or "401" in error_msg:
-            st.error(
-                "❌ Invalid API Key. Double-check the key you pasted. "
-                "Get a new one from [Google AI Studio](https://aistudio.google.com/app/apikey)."
-            )
-        elif "quota" in error_msg.lower() or "rate" in error_msg.lower() or "429" in error_msg:
-            st.error(
-                "❌ Rate limit hit. Wait 1 minute and try again. "
-                "Free tier has limits — that's normal."
-            )
-        elif "404" in error_msg or "NOT_FOUND" in error_msg:
-            st.error(
-                "❌ Model not found. The model name might be outdated. "
-                "Contact trainer for assistance."
-            )
+        if "restaurant" in text.lower():
+            category = "F&B"
+        elif "invoice" in text.lower():
+            category = "Services"
         else:
-            st.error(f"❌ System Error: {error_msg}")
+            category = "Others"
 
-# --- FOOTER ---
+        # =========================
+        # DUPLICATE HASH
+        # =========================
+        doc_hash = generate_hash({
+            "vendor_name": data.get("vendor_name"),
+            "total_amount": data.get("total_amount"),
+            "date": data.get("date")
+        })
+
+        # =========================
+        # SHOW RESULT
+        # =========================
+        st.success("Extracted Data")
+        st.json(data)
+
+        st.info(f"Hash: {doc_hash}")
+
+        # =========================
+        # OFFLINE MODE (QUEUE)
+        # =========================
+        record = {
+            "timestamp": str(datetime.datetime.now()),
+            "data": data,
+            "category": category,
+            "hash": doc_hash
+        }
+
+        add_to_queue(record)
+
+        st.success("Saved to offline queue (safe mode)")
+
+# =========================
+# SYNC BUTTON
+# =========================
 st.markdown("---")
-st.caption(
-    "🎓 Building AI Vision App with Gemini API • "
-    "MISDEC Melaka • 06 June 2026"
-)
+
+if st.button("🔄 Sync Queue to Google Sheets"):
+    st.success("Sync triggered (connect your sheet function here)")
