@@ -1,9 +1,10 @@
 import gspread
 from google.oauth2.service_account import Credentials
+from config import SHEET_NAME
 
 class GoogleSheetService:
 
-    def __init__(self, sheet_name):
+    def __init__(self):
         scope = [
             "https://spreadsheets.google.com/feeds",
             "https://www.googleapis.com/auth/drive"
@@ -15,10 +16,10 @@ class GoogleSheetService:
         )
 
         client = gspread.authorize(creds)
-        self.sheet = client.open(sheet_name).sheet1
+        self.sheet = client.open(SHEET_NAME).sheet1
 
     def append_row(self, row):
         self.sheet.append_row(row)
 
-    def get_all_values(self):
+    def get_all_rows(self):
         return self.sheet.get_all_values()
