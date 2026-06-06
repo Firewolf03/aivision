@@ -9,3 +9,5 @@ pandas
 google-genai
 openpyxl
 requests
+google-generativeai
+
