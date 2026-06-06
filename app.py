@@ -3,7 +3,7 @@
 # FIXED: Using gemini-2.5-flash (current model)
 # ==========================================
 
-%%writefile app.py
+#writefile app.py
 import streamlit as st
 from google import genai
 from google.genai import types
