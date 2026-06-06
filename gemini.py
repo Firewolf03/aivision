@@ -7,7 +7,7 @@ def extract_with_gemini(api_key, image, prompt):
     client = genai.Client(api_key=api_key)
 
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-1.5-flash",
         contents=[prompt, image],
         config=types.GenerateContentConfig(
             temperature=0.1,
