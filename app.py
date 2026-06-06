@@ -9,7 +9,7 @@ from google.genai import types
 # =========================
 # CONFIG
 # =========================
-APPS_SCRIPT_URL = "YOUR_WEB_APP_URL"
+APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz1QfgJnevTr7lkFp4y4whzwk61PcuEWYmNpZ2NJz4yZg_TJ-ZFTjJW338OX4e-9LRAvg/exec"
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
