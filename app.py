@@ -3,7 +3,7 @@ from PIL import Image
 import datetime
 import requests
 
-from gemini import extract_with_gemini   # or paste function directly
+from gemini import extract_with_gemini   # Pastikan fungsi gemini.py dah dikemas kini
 
 # =========================
 # CONFIG
@@ -11,7 +11,6 @@ from gemini import extract_with_gemini   # or paste function directly
 APPS_SCRIPT_URL = "YOUR_WEB_APP_URL"
 
 st.title("📸 AI Receipt Scanner (Gemini + Streamlit)")
-
 
 # =========================
 # PROMPT
@@ -34,20 +33,35 @@ Extract receipt/invoice/quotation into JSON:
 }
 """
 
-
 # =========================
-# INPUT
+# INPUT (API KEY)
 # =========================
 api_key = st.text_input("Gemini API Key", type="password")
 
-file = st.camera_input("📸 Snap Receipt") or st.file_uploader("Upload Image")
+# Pilihan Input Imej yang lebih stabil menggunakan Tabs
+tab1, tab2 = st.tabs(["📸 Ambil Gambar", "📁 Muat Naik Fail"])
+
+file = None
+with tab1:
+    cam_file = st.camera_input("Snap Receipt")
+    if cam_file:
+        file = cam_file
+
+with tab2:
+    uploaded_file = st.file_uploader("Upload Image", type=["jpg", "jpeg", "png"])
+    if uploaded_file:
+        file = uploaded_file
 
 # =========================
 # SEND FUNCTION
 # =========================
 def send_to_sheet(payload):
-    return requests.post(APPS_SCRIPT_URL, json=payload)
-
+    try:
+        response = requests.post(APPS_SCRIPT_URL, json=payload, timeout=10)
+        return response
+    except Exception as e:
+        st.error(f"Gagal berhubung dengan Google Sheets: {e}")
+        return None
 
 # =========================
 # PROCESS
@@ -55,29 +69,37 @@ def send_to_sheet(payload):
 if st.button("🚀 Extract & Save"):
 
     if not api_key:
-        st.error("Missing API key")
+        st.error("Sila masukkan API key Gemini anda.")
         st.stop()
 
     if not file:
-        st.error("No image")
+        st.error("Sila ambil gambar atau muat naik fail resit terlebih dahulu.")
         st.stop()
 
+    # Paparkan imej di UI Streamlit
     image = Image.open(file)
-    st.image(image)
+    st.image(image, caption="Imej yang diproses", use_container_width=True)
 
     # =========================
     # GEMINI AI
     # =========================
-    data = extract_with_gemini(api_key, image, PROMPT)
-
-    st.success("AI Extraction Done")
-    st.json(data)
+    with st.spinner("AI sedang membaca resit..."):
+        try:
+            # Nota: Kita hantar 'image' (PIL Object) yang dah dibuka siap-siap
+            data = extract_with_gemini(api_key, image, PROMPT)
+            st.success("AI Extraction Done")
+            st.json(data)
+        except Exception as e:
+            st.error(f"Gagal memproses imej dengan Gemini: {e}")
+            st.stop()
 
     # =========================
     # FORMAT ITEMS
     # =========================
+    # Menggunakan penanganan jika 'items' tiada atau bukan dalam bentuk list
+    items_list = data.get("items") if isinstance(data.get("items"), list) else []
     items_text = "; ".join(
-        [f"{i.get('item')} x{i.get('qty',1)}" for i in data.get("items", [])]
+        [f"{i.get('item', 'Unknown')} x{i.get('qty', 1)}" for i in items_list]
     )
 
     # =========================
@@ -85,9 +107,9 @@ if st.button("🚀 Extract & Save"):
     # =========================
     text = str(data).lower()
 
-    if "restaurant" in text or "food" in text:
+    if "restaurant" in text or "food" in text or "kedai makan" in text:
         category = "F&B"
-    elif "invoice" in text:
+    elif "invoice" in text or "service" in text:
         category = "Services"
     else:
         category = "Others"
@@ -99,7 +121,7 @@ if st.button("🚀 Extract & Save"):
         "document_type": data.get("document_type"),
         "document_number": data.get("document_number"),
         "vendor_name": data.get("vendor_name"),
-        "currency": data.get("currency"),
+        "currency": data.get("currency", "MYR"),
         "subtotal": data.get("subtotal"),
         "tax_amount": data.get("tax_amount"),
         "total_amount": data.get("total_amount"),
@@ -114,7 +136,11 @@ if st.button("🚀 Extract & Save"):
     # =========================
     # SEND TO SHEET
     # =========================
-    res = send_to_sheet(payload)
-
-    st.success("Saved to Google Sheets")
-    st.write(res.text)
+    with st.spinner("Menghantar data ke Google Sheets..."):
+        res = send_to_sheet(payload)
+        
+        if res and res.status_code == 200:
+            st.success("Berjaya disimpan ke Google Sheets!")
+            st.write("Respon Apps Script:", res.text)
+        else:
+            st.error("Gagal menyimpan data. Sila semak Apps Script Web App URL anda.")
